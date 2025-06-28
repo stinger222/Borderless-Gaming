@@ -1,0 +1,126 @@
+name: Build and Release
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET Framework
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Setup NuGet
+      uses: nuget/setup-nuget@v2
+      with:
+        nuget-version: 'latest'
+        
+    - name: Restore NuGet packages
+      run: nuget restore BorderlessGaming.sln
+      
+    - name: Build solution
+      run: msbuild BorderlessGaming.sln /p:Configuration=Release /p:Platform="Any CPU" /p:PostBuildEvent=""
+      
+    - name: List build outputs for debugging
+      run: |
+        Write-Host "Contents of BorderlessGaming/bin/Release:"
+        if (Test-Path "BorderlessGaming/bin/Release") {
+          Get-ChildItem "BorderlessGaming/bin/Release" -Recurse | ForEach-Object { Write-Host $_.FullName }
+        } else {
+          Write-Host "Release directory not found!"
+        }
+        
+    - name: Copy build outputs
+      run: |
+        New-Item -ItemType Directory -Path "release-artifacts" -Force
+        
+        if (Test-Path "BorderlessGaming/bin/Release") {
+          robocopy "BorderlessGaming/bin/Release" "release-artifacts" /E /XF *.pdb
+          if ($LASTEXITCODE -ge 8) { throw "Robocopy failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+        }
+        
+        if (Test-Path "Languages") { 
+          New-Item -ItemType Directory -Path "release-artifacts/Languages" -Force
+          robocopy "Languages" "release-artifacts/Languages" /E
+          if ($LASTEXITCODE -ge 8) { throw "Robocopy failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+        }
+        
+        if (Test-Path "SteamLibs") { 
+          New-Item -ItemType Directory -Path "release-artifacts/SteamLibs" -Force
+          robocopy "SteamLibs" "release-artifacts/SteamLibs" /E
+          if ($LASTEXITCODE -ge 8) { throw "Robocopy failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+        }
+        
+        if (Test-Path "README.md") { cp "README.md" "release-artifacts/" }
+        if (Test-Path "LICENSE") { cp "LICENSE" "release-artifacts/" }
+        
+    - name: List final artifacts for debugging
+      run: |
+        Write-Host "Contents of release-artifacts:"
+        Get-ChildItem "release-artifacts" -Recurse | ForEach-Object { Write-Host $_.FullName }
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: borderless-gaming-${{ github.sha }}
+        path: release-artifacts/
+        
+  release:
+    needs: build
+    runs-on: windows-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: borderless-gaming-${{ github.sha }}
+        path: release-artifacts/
+        
+    - name: Generate release info
+      id: release_info
+      run: |
+        $date = Get-Date -Format "yyyy.MM.dd-HHmm"
+        $tag = "build-$date"
+        $short_sha = "${{ github.sha }}".Substring(0, 7)
+        echo "date=$date" >> $env:GITHUB_OUTPUT
+        echo "tag=$tag" >> $env:GITHUB_OUTPUT
+        echo "short_sha=$short_sha" >> $env:GITHUB_OUTPUT
+        
+    - name: Create release archive
+      run: |
+        Compress-Archive -Path "release-artifacts/*" -DestinationPath "BorderlessGaming-${{ steps.release_info.outputs.tag }}.zip"
+        
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.release_info.outputs.tag }}
+        release_name: borderless-gaming ${{ steps.release_info.outputs.date }}
+        draft: false
+        prerelease: false
+        body: |
+          borderless-gaming ${{ steps.release_info.outputs.date }}
+          
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./BorderlessGaming-${{ steps.release_info.outputs.tag }}.zip
+        asset_name: BorderlessGaming-${{ steps.release_info.outputs.tag }}.zip
+        asset_content_type: application/zip 
